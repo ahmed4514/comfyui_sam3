@@ -81,120 +81,141 @@ class SAM3Segmentation:
         # Load model if not already loaded
         self.load_model()
         
-        # Convert ComfyUI image format [B, H, W, C] to PIL Image
-        # ComfyUI images are in range [0, 1], convert to [0, 255]
-        image_np = (image[0].cpu().numpy() * 255).astype(np.uint8)
-        pil_image = Image.fromarray(image_np)
+        batch_size = image.shape[0]
+        all_result_images = []
+        all_masks = []
+        all_combined_masks = []
         
-        # Set up inference state
-        inference_state = self.processor.set_image(pil_image)
-        
-        # Run segmentation with text prompt
-        output = self.processor.set_text_prompt(state=inference_state, prompt=prompt)
-        
-        # Get results
-        masks = output["masks"]
-        boxes = output["boxes"]
-        scores = output["scores"]
-        
-        # Filter by threshold, minimum width, and minimum height
-        filtered_indices = []
-        for i, (score, box) in enumerate(zip(scores, boxes)):
-            if score >= threshold:
-                # Calculate box dimensions
+        # Process each image in the batch
+        for batch_idx in range(batch_size):
+            # Convert ComfyUI image format [B, H, W, C] to PIL Image
+            # ComfyUI images are in range [0, 1], convert to [0, 255]
+            image_np = (image[batch_idx].cpu().numpy() * 255).astype(np.uint8)
+            pil_image = Image.fromarray(image_np)
+
+            
+            # Set up inference state
+            inference_state = self.processor.set_image(pil_image)
+            
+            # Run segmentation with text prompt
+            output = self.processor.set_text_prompt(state=inference_state, prompt=prompt)
+            
+            # Get results
+            masks = output["masks"]
+            boxes = output["boxes"]
+            scores = output["scores"]
+            
+            # Filter by threshold, minimum width, and minimum height
+            filtered_indices = []
+            for i, (score, box) in enumerate(zip(scores, boxes)):
+                if score >= threshold:
+                    # Calculate box dimensions
+                    x1, y1, x2, y2 = box
+                    box_width = x2 - x1
+                    box_height = y2 - y1
+                    if box_width >= min_width_pixels and box_height >= min_height_pixels:
+                        filtered_indices.append(i)
+            
+            masks = [masks[i] for i in filtered_indices]
+            boxes = [boxes[i] for i in filtered_indices]
+            scores = [scores[i] for i in filtered_indices]
+            
+            print(f"SAM3 [Image {batch_idx + 1}/{batch_size}] found {len(masks)} object(s) matching '{prompt}' with score >= {threshold}, width >= {min_width_pixels}px, height >= {min_height_pixels}px")
+
+            
+            # Create visualization
+            result_img = pil_image.copy()
+            
+            # Process each detection
+            for i, (mask, box, score) in enumerate(zip(masks, boxes, scores)):
+                # Convert mask to numpy if it's a tensor
+                if torch.is_tensor(mask):
+                    mask = mask.cpu().numpy()
+                
+                # Squeeze mask to remove extra dimensions
+                mask = np.squeeze(mask)
+                
+                # Resize mask if needed to match image dimensions
+                if mask.shape != (pil_image.size[1], pil_image.size[0]):
+                    mask_img = Image.fromarray((mask * 255).astype(np.uint8))
+                    mask_img = mask_img.resize(pil_image.size, Image.NEAREST)
+                    mask = np.array(mask_img) > 0
+                
+                # Create colored overlay for mask
+                mask_array = np.zeros((pil_image.size[1], pil_image.size[0], 4), dtype=np.uint8)
+                
+                # Apply mask with semi-transparent color
+                colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
+                mask_color = colors[i % len(colors)]
+                mask_array[mask] = (*mask_color, 100)  # Semi-transparent
+                
+                mask_overlay = Image.fromarray(mask_array, 'RGBA')
+                result_img = Image.alpha_composite(result_img.convert('RGBA'), mask_overlay).convert('RGB')
+                
+                # Draw bounding box
+                from PIL import ImageDraw, ImageFont
+                draw = ImageDraw.Draw(result_img)
                 x1, y1, x2, y2 = box
-                box_width = x2 - x1
-                box_height = y2 - y1
-                if box_width >= min_width_pixels and box_height >= min_height_pixels:
-                    filtered_indices.append(i)
-        
-        masks = [masks[i] for i in filtered_indices]
-        boxes = [boxes[i] for i in filtered_indices]
-        scores = [scores[i] for i in filtered_indices]
-        
-        print(f"SAM3 found {len(masks)} object(s) matching '{prompt}' with score >= {threshold}, width >= {min_width_pixels}px, height >= {min_height_pixels}px")
-        
-        # Create visualization
-        result_img = pil_image.copy()
-        
-        # Process each detection
-        for i, (mask, box, score) in enumerate(zip(masks, boxes, scores)):
-            # Convert mask to numpy if it's a tensor
-            if torch.is_tensor(mask):
-                mask = mask.cpu().numpy()
+                draw.rectangle([x1, y1, x2, y2], outline=mask_color, width=3)
+                
+                # Draw score text
+                score_text = f"{score:.2f}"
+                try:
+                    font = ImageFont.truetype("arial.ttf", 20)
+                except:
+                    font = ImageFont.load_default()
+                
+                # Draw text background
+                text_bbox = draw.textbbox((x1, y1 - 25), score_text, font=font)
+                draw.rectangle(text_bbox, fill=mask_color)
+                draw.text((x1, y1 - 25), score_text, fill=(255, 255, 255), font=font)
             
-            # Squeeze mask to remove extra dimensions
-            mask = np.squeeze(mask)
+            # Convert result back to ComfyUI format [H, W, C] with values in [0, 1]
+            result_np = np.array(result_img).astype(np.float32) / 255.0
+            all_result_images.append(result_np)
             
-            # Resize mask if needed to match image dimensions
-            if mask.shape != (pil_image.size[1], pil_image.size[0]):
-                mask_img = Image.fromarray((mask * 255).astype(np.uint8))
-                mask_img = mask_img.resize(pil_image.size, Image.NEAREST)
-                mask = np.array(mask_img) > 0
+            # Prepare mask batch - ComfyUI masks are [B, H, W] with values in [0, 1]
+            mask_list = []
+            for i, (mask, box, score) in enumerate(zip(masks, boxes, scores)):
+                # Convert mask to numpy if it's a tensor
+                if torch.is_tensor(mask):
+                    mask = mask.cpu().numpy()
+                
+                # Squeeze mask to remove extra dimensions
+                mask = np.squeeze(mask)
+                
+                # Resize mask if needed to match image dimensions
+                if mask.shape != (pil_image.size[1], pil_image.size[0]):
+                    mask_img = Image.fromarray((mask * 255).astype(np.uint8))
+                    mask_img = mask_img.resize(pil_image.size, Image.NEAREST)
+                    mask = (np.array(mask_img) / 255.0).astype(np.float32)
+                else:
+                    mask = mask.astype(np.float32)
+                
+                mask_list.append(mask)
             
-            # Create colored overlay for mask
-            mask_array = np.zeros((pil_image.size[1], pil_image.size[0], 4), dtype=np.uint8)
-            
-            # Apply mask with semi-transparent color
-            colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (255, 0, 255), (0, 255, 255)]
-            mask_color = colors[i % len(colors)]
-            mask_array[mask] = (*mask_color, 100)  # Semi-transparent
-            
-            mask_overlay = Image.fromarray(mask_array, 'RGBA')
-            result_img = Image.alpha_composite(result_img.convert('RGBA'), mask_overlay).convert('RGB')
-            
-            # Draw bounding box
-            from PIL import ImageDraw, ImageFont
-            draw = ImageDraw.Draw(result_img)
-            x1, y1, x2, y2 = box
-            draw.rectangle([x1, y1, x2, y2], outline=mask_color, width=3)
-            
-            # Draw score text
-            score_text = f"{score:.2f}"
-            try:
-                font = ImageFont.truetype("arial.ttf", 20)
-            except:
-                font = ImageFont.load_default()
-            
-            # Draw text background
-            text_bbox = draw.textbbox((x1, y1 - 25), score_text, font=font)
-            draw.rectangle(text_bbox, fill=mask_color)
-            draw.text((x1, y1 - 25), score_text, fill=(255, 255, 255), font=font)
-        
-        # Convert result back to ComfyUI format [B, H, W, C] with values in [0, 1]
-        result_np = np.array(result_img).astype(np.float32) / 255.0
-        result_tensor = torch.from_numpy(result_np).unsqueeze(0)
-        
-        # Prepare mask batch - ComfyUI masks are [B, H, W] with values in [0, 1]
-        mask_list = []
-        for i, (mask, box, score) in enumerate(zip(masks, boxes, scores)):
-            # Convert mask to numpy if it's a tensor
-            if torch.is_tensor(mask):
-                mask = mask.cpu().numpy()
-            
-            # Squeeze mask to remove extra dimensions
-            mask = np.squeeze(mask)
-            
-            # Resize mask if needed to match image dimensions
-            if mask.shape != (pil_image.size[1], pil_image.size[0]):
-                mask_img = Image.fromarray((mask * 255).astype(np.uint8))
-                mask_img = mask_img.resize(pil_image.size, Image.NEAREST)
-                mask = (np.array(mask_img) / 255.0).astype(np.float32)
+            # Store masks for this image
+            if len(mask_list) > 0:
+                all_masks.extend(mask_list)
+                # Create combined mask by taking maximum across all masks
+                combined_mask = np.maximum.reduce(mask_list)
+                all_combined_masks.append(combined_mask)
             else:
-                mask = mask.astype(np.float32)
-            
-            mask_list.append(mask)
+                # Return empty mask if no detections for this image
+                all_combined_masks.append(np.zeros((pil_image.size[1], pil_image.size[0]), dtype=np.float32))
+        
+        # Stack all results into batch tensors
+        result_tensor = torch.from_numpy(np.stack(all_result_images, axis=0))
         
         # Stack masks into batch tensor [B, H, W]
-        if len(mask_list) > 0:
-            masks_tensor = torch.from_numpy(np.stack(mask_list, axis=0))
-            # Create combined mask by taking maximum across all masks
-            combined_mask = np.maximum.reduce(mask_list)
-            combined_mask_tensor = torch.from_numpy(combined_mask).unsqueeze(0)
+        if len(all_masks) > 0:
+            masks_tensor = torch.from_numpy(np.stack(all_masks, axis=0))
         else:
-            # Return empty mask if no detections
-            masks_tensor = torch.zeros((1, pil_image.size[1], pil_image.size[0]), dtype=torch.float32)
-            combined_mask_tensor = torch.zeros((1, pil_image.size[1], pil_image.size[0]), dtype=torch.float32)
+            # Return empty mask if no detections across all images
+            masks_tensor = torch.zeros((1, image.shape[1], image.shape[2]), dtype=torch.float32)
+        
+        # Stack combined masks [B, H, W]
+        combined_mask_tensor = torch.from_numpy(np.stack(all_combined_masks, axis=0))
         
         return (result_tensor, masks_tensor, combined_mask_tensor)
 
