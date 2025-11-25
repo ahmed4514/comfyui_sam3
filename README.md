@@ -22,10 +22,20 @@ SAM3 is a powerful zero-shot segmentation model that can identify and segment ob
    ```bash
    pip install -r requirements.txt
    ```
-3. Request model access at https://huggingface.co/facebook/sam3
-4. Login to huggingface using ``hf auth login``
-5. Restart ComfyUI.
-6. Load example workflow from ``workflow_example/Workflow_SAM3_image_text.json``
+3. **Model Setup** - Choose one of the following options:
+   
+   **Option A: Auto-download from HuggingFace (recommended)**
+   - Request model access at https://huggingface.co/facebook/sam3
+   - Login to huggingface using `hf auth login`
+   - The model will automatically download on first use
+   
+   **Option B: Manual checkpoint placement**
+   - Download `sam3.pt` manually from https://huggingface.co/facebook/sam3/tree/main
+   - Place the checkpoint file at: `ComfyUI/models/sam3/sam3.pt`
+   - The node will automatically detect and use the local checkpoint
+   
+4. Restart ComfyUI.
+5. Load example workflow from `workflow_example/Workflow_SAM3_image_text.json`
 
 ## Features
 

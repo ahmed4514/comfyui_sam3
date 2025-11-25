@@ -4,6 +4,13 @@ import numpy as np
 from PIL import Image
 from sam3.model_builder import build_sam3_image_model, build_sam3_video_model
 from sam3.model.sam3_image_processor import Sam3Processor
+import os
+
+try:
+    import folder_paths
+    COMFYUI_AVAILABLE = True
+except ImportError:
+    COMFYUI_AVAILABLE = False
 
 class SAM3Segmentation:
     """
@@ -19,8 +26,34 @@ class SAM3Segmentation:
         self.processor = None
         self.use_video_model = None
     
+    def _find_sam3_checkpoint(self):
+        """Look for sam3.pt checkpoint in ComfyUI/models/sam3/ folder"""
+        if not COMFYUI_AVAILABLE:
+            return None
+        
+        # Try to find sam3.pt in models/sam3/ directory
+        try:
+            # Get the base models folder from ComfyUI
+            model_paths = folder_paths.get_folder_paths("checkpoints")
+            
+            # Look for models/sam3/sam3.pt relative to the models folder
+            for model_path in model_paths:
+                # Go up one level from checkpoints to models, then into sam3
+                models_base = os.path.dirname(model_path)
+                sam3_checkpoint = os.path.join(models_base, "sam3", "sam3.pt")
+                if os.path.exists(sam3_checkpoint):
+                    print(f"SAM3: Found checkpoint at {sam3_checkpoint}")
+                    return sam3_checkpoint
+        except Exception as e:
+            print(f"SAM3: Error searching for checkpoint: {e}")
+        
+        return None
+    
     def load_model(self, use_video_model=False):
         """Force reload the model every time for video model to avoid state issues"""
+        # Find checkpoint if available
+        checkpoint_path = self._find_sam3_checkpoint()
+        
         # Always reload video model to ensure clean state
         if use_video_model:
             print("Loading SAM3 video model...")
@@ -31,7 +64,10 @@ class SAM3Segmentation:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             
-            self.model = build_sam3_video_model()
+            if checkpoint_path:
+                self.model = build_sam3_video_model(checkpoint_path=checkpoint_path)
+            else:
+                self.model = build_sam3_video_model()
             # For video model, create processor using the detector's backbone
             self.processor = Sam3Processor(self.model.detector)
             print("SAM3 video model loaded successfully")
@@ -45,7 +81,10 @@ class SAM3Segmentation:
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
             
-            self.model = build_sam3_image_model()
+            if checkpoint_path:
+                self.model = build_sam3_image_model(checkpoint_path=checkpoint_path)
+            else:
+                self.model = build_sam3_image_model()
             self.processor = Sam3Processor(self.model)
             print("SAM3 image model loaded successfully")
             self.use_video_model = use_video_model

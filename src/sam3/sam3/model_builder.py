@@ -524,6 +524,7 @@ def _create_sam3_transformer(has_presence_token: bool = True) -> TransformerWrap
 
 def _load_checkpoint(model, checkpoint_path):
     """Load model checkpoint from file."""
+    print(f"Loading SAM3 Checkpoint from: {checkpoint_path}")
     with g_pathmgr.open(checkpoint_path, "rb") as f:
         ckpt = torch.load(f, map_location="cpu", weights_only=True)
     if "model" in ckpt and isinstance(ckpt["model"], dict):
@@ -786,6 +787,9 @@ def build_sam3_video_model(
             print(f"Unexpected keys: {unexpected_keys}")
 
     model.to(device=device)
+
+    print(f"SAM3 Video Checkpoint loaded from: {checkpoint_path}")
+
     return model
 
 
