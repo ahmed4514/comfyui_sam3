@@ -88,7 +88,26 @@ class SAM3Segmentation:
             self.processor = Sam3Processor(self.model)
             print("SAM3 image model loaded successfully")
             self.use_video_model = use_video_model
-    
+
+    def unload_model(self):
+        """Completely unload SAM3 from memory (CPU and GPU)."""
+        if self.model is not None:
+            del self.model
+            self.model = None
+
+        if self.processor is not None:
+            del self.processor
+            self.processor = None
+
+        # Clear GPU cache if available
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        # Reset mode flag
+        self.use_video_model = None
+
+        print("SAM3: Model unloaded from memory")
+
     @classmethod
     def INPUT_TYPES(s):
         return {
@@ -122,6 +141,10 @@ class SAM3Segmentation:
                     "default": False,
                     "tooltip": "Use SAM3 video model instead of image model"
                 }),
+                "unload_after_run": ("BOOLEAN", {
+                    "default": False,
+                    "tooltip": "If true, unload SAM3 from GPU after this node finishes"
+                }),
             },
             "optional": {
                 "object_ids": ("STRING", {
@@ -136,8 +159,8 @@ class SAM3Segmentation:
     DESCRIPTION = cleandoc(__doc__)
     FUNCTION = "segment"
     CATEGORY = "SAM3"
-    
-    def segment(self, image, prompt, threshold, min_width_pixels, min_height_pixels, use_video_model, object_ids=""):
+
+    def segment(self, image, prompt, threshold, min_width_pixels, min_height_pixels, use_video_model, unload_after_run=False, object_ids=""):
         """
         Perform segmentation on the input image using the text prompt
         
@@ -157,12 +180,20 @@ class SAM3Segmentation:
         self.load_model(use_video_model=use_video_model)
         
         if use_video_model:
-            # Use video model for temporal tracking across batch
-            return self._segment_with_video_model(image, prompt, threshold, min_width_pixels, min_height_pixels, object_ids)
+            result = self._segment_with_video_model(
+                image, prompt, threshold, min_width_pixels, min_height_pixels, object_ids
+            )
         else:
-            # Use image model for independent frame processing
-            return self._segment_with_image_model(image, prompt, threshold, min_width_pixels, min_height_pixels)
-    
+            result = self._segment_with_image_model(
+                image, prompt, threshold, min_width_pixels, min_height_pixels
+            )
+
+            # Unload if requested
+        if unload_after_run:
+            self.unload_model()
+
+        return result
+
     def _segment_with_image_model(self, image, prompt, threshold, min_width_pixels, min_height_pixels):
         """Process images independently using the image model"""
         batch_size = image.shape[0]
@@ -183,7 +214,7 @@ class SAM3Segmentation:
             
             # Run segmentation with text prompt
             output = self.processor.set_text_prompt(state=inference_state, prompt=prompt)
-            
+
             # Get results
             masks = output["masks"]
             boxes = output["boxes"]
