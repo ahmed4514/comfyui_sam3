@@ -103,9 +103,6 @@ class SAM3Segmentation:
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
-        # Reset mode flag
-        self.use_video_model = None
-
         print("SAM3: Model unloaded from memory")
 
     @classmethod
