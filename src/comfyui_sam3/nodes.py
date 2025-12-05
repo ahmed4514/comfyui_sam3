@@ -57,12 +57,7 @@ class SAM3Segmentation:
         # Always reload video model to ensure clean state
         if use_video_model:
             print("Loading SAM3 video model...")
-            # Clear existing model if present
-            if self.model is not None:
-                del self.model
-                del self.processor
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            self.unload_model()
             
             if checkpoint_path:
                 self.model = build_sam3_video_model(checkpoint_path=checkpoint_path)
@@ -75,11 +70,7 @@ class SAM3Segmentation:
         # Only reload image model if needed
         elif self.model is None or self.use_video_model != use_video_model:
             print("Loading SAM3 image model...")
-            if self.model is not None:
-                del self.model
-                del self.processor
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+            self.unload_model()
             
             if checkpoint_path:
                 self.model = build_sam3_image_model(checkpoint_path=checkpoint_path)
@@ -185,7 +176,7 @@ class SAM3Segmentation:
                 image, prompt, threshold, min_width_pixels, min_height_pixels
             )
 
-            # Unload if requested
+        # Unload if requested
         if unload_after_run:
             self.unload_model()
 
