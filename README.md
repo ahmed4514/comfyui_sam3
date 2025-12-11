@@ -56,6 +56,7 @@ SAM3 is a powerful zero-shot segmentation model that can identify and segment ob
 - **segmented_image** (IMAGE) - Visualization with colored mask overlays, bounding boxes, and confidence scores
 - **masks** (MASK) - Batch of individual binary masks, one for each detected object `[B, H, W]`
 - **mask_combined** (MASK) - Single merged mask containing all detected objects `[1, H, W]`
+- **segs** (SEGS) - Segmentation objects compatible with ComfyUI-Impact-Pack, containing cropped images, masks, bounding boxes, and metadata for each detection
 
 ### Model Modes
 
@@ -90,3 +91,52 @@ SAM3 is a powerful zero-shot segmentation model that can identify and segment ob
 - Filter detections by size to focus on foreground/background objects
 - Track objects across video frames with consistent IDs (video model)
 - Follow specific objects through animation sequences (video model)
+
+### Mask Outline Node
+
+Creates an outline version of a mask with configurable width and position.
+
+**Inputs:**
+
+- **mask** (MASK) - Input mask to create outline from
+- **outline_width** (INT, 1-100) - Width of the outline in pixels (default: 5)
+- **mode** (ENUM) - Where to create the outline:
+  - `inside` - Outline inside the mask boundary
+  - `outside` - Outline outside the mask boundary
+  - `both` - Outline on both sides of the boundary
+
+**Outputs:**
+
+- **outline_mask** (MASK) - The outline mask
+
+**Features:**
+- Properly handles masks that touch image edges (creates outline along the edge)
+- Supports batch processing
+- Uses elliptical structuring element for smooth outlines
+
+**Example Use Cases:**
+- Create stroke effects around segmented objects
+- Generate selection borders for compositing
+- Add glow or border effects to masks
+
+### SEGS to Rectangle Node
+
+Converts SEGS with polygon-shaped masks into SEGS with rectangular masks that fully encompass the original shapes.
+
+**Inputs:**
+
+- **segs** (SEGS) - Input SEGS with polygon masks
+
+**Outputs:**
+
+- **segs** (SEGS) - SEGS with rectangular masks covering the full bounding box
+
+**Features:**
+- Converts complex polygon masks to simple rectangular masks
+- Preserves all SEG metadata (confidence, labels, crop regions, etc.)
+- Useful for workflows that need rectangular regions instead of precise segmentation
+
+**Example Use Cases:**
+- Prepare regions for inpainting where full rectangular coverage is needed
+- Simplify masks for certain post-processing operations
+- Create bounding box masks from detailed segmentation results

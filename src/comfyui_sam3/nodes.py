@@ -1,4 +1,5 @@
 from inspect import cleandoc
+from collections import namedtuple
 import torch
 import numpy as np
 from PIL import Image
@@ -11,6 +12,11 @@ try:
     COMFYUI_AVAILABLE = True
 except ImportError:
     COMFYUI_AVAILABLE = False
+
+# SEG namedtuple compatible with ComfyUI-Impact-Pack
+SEG = namedtuple("SEG",
+                 ['cropped_image', 'cropped_mask', 'confidence', 'crop_region', 'bbox', 'label', 'control_net_wrapper'],
+                 defaults=[None])
 
 class SAM3Segmentation:
     """
@@ -40,10 +46,13 @@ class SAM3Segmentation:
             for model_path in model_paths:
                 # Go up one level from checkpoints to models, then into sam3
                 models_base = os.path.dirname(model_path)
-                sam3_checkpoint = os.path.join(models_base, "sam3", "sam3.pt")
-                if os.path.exists(sam3_checkpoint):
-                    print(f"SAM3: Found checkpoint at {sam3_checkpoint}")
-                    return sam3_checkpoint
+                sam3_checkpoint = os.path.join(models_base, "sam3")
+                checkpoint_files = ["sam3.pt"]
+                for checkpoint_file in checkpoint_files:
+                    checkpoint_path = os.path.join(sam3_checkpoint, checkpoint_file)
+                    if os.path.exists(checkpoint_path):
+                        print(f"SAM3: Found checkpoint at {checkpoint_path}")
+                        return checkpoint_path
         except Exception as e:
             print(f"SAM3: Error searching for checkpoint: {e}")
         
@@ -142,8 +151,8 @@ class SAM3Segmentation:
             },
         }
     
-    RETURN_TYPES = ("IMAGE", "MASK", "MASK")
-    RETURN_NAMES = ("segmented_image", "masks", "mask_combined")
+    RETURN_TYPES = ("IMAGE", "MASK", "MASK", "SEGS")
+    RETURN_NAMES = ("segmented_image", "masks", "mask_combined", "segs")
     DESCRIPTION = cleandoc(__doc__)
     FUNCTION = "segment"
     CATEGORY = "SAM3"
@@ -188,6 +197,11 @@ class SAM3Segmentation:
         all_result_images = []
         all_masks = []
         all_combined_masks = []
+        all_segs = []  # List to collect all SEG objects
+        
+        # Get image dimensions for SEGS shape
+        img_height = image.shape[1]
+        img_width = image.shape[2]
         
         # Process each image in the batch
         for batch_idx in range(batch_size):
@@ -277,7 +291,7 @@ class SAM3Segmentation:
             result_np = np.array(result_img).astype(np.float32) / 255.0
             all_result_images.append(result_np)
             
-            # Prepare mask batch - ComfyUI masks are [B, H, W] with values in [0, 1]
+            # Prepare mask batch and SEG objects - ComfyUI masks are [B, H, W] with values in [0, 1]
             mask_list = []
             for i, (mask, box, score) in enumerate(zip(masks, boxes, scores)):
                 # Convert mask to numpy if it's a tensor
@@ -296,6 +310,40 @@ class SAM3Segmentation:
                     mask = mask.astype(np.float32)
                 
                 mask_list.append(mask)
+                
+                # Build SEG object for this detection
+                x1, y1, x2, y2 = box
+                x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
+                
+                # Clamp coordinates to image bounds
+                img_h, img_w = image_np.shape[:2]
+                x1 = max(0, min(x1, img_w - 1))
+                y1 = max(0, min(y1, img_h - 1))
+                x2 = max(x1 + 1, min(x2, img_w))
+                y2 = max(y1 + 1, min(y2, img_h))
+                
+                # crop_region is the area we crop from the original image (x1, y1, x2, y2)
+                crop_region = (x1, y1, x2, y2)
+                
+                # bbox is the bounding box in original image coordinates
+                bbox = (x1, y1, x2, y2)
+                
+                # Crop the image and mask for this segment
+                # Use the resized mask (current 'mask' variable) for cropping
+                cropped_image_np = image_np[y1:y2, x1:x2].astype(np.float32) / 255.0
+                cropped_mask = mask[y1:y2, x1:x2].copy()
+                
+                # Create SEG object
+                seg = SEG(
+                    cropped_image=cropped_image_np,
+                    cropped_mask=cropped_mask,
+                    confidence=float(score),
+                    crop_region=crop_region,
+                    bbox=bbox,
+                    label=prompt,
+                    control_net_wrapper=None
+                )
+                all_segs.append(seg)
             
             # Store masks for this image
             if len(mask_list) > 0:
@@ -320,7 +368,11 @@ class SAM3Segmentation:
         # Stack combined masks [B, H, W]
         combined_mask_tensor = torch.from_numpy(np.stack(all_combined_masks, axis=0))
         
-        return (result_tensor, masks_tensor, combined_mask_tensor)
+        # Build SEGS tuple: (shape, list_of_SEG_objects)
+        # Shape is (height, width) of the original image
+        segs = ((img_height, img_width), all_segs)
+        
+        return (result_tensor, masks_tensor, combined_mask_tensor, segs)
     
     def _segment_with_video_model(self, image, prompt, threshold, min_width_pixels, min_height_pixels, object_ids=""):
         """Process images as video frames using the video model with temporal tracking"""
@@ -339,10 +391,16 @@ class SAM3Segmentation:
         
         batch_size = image.shape[0]
         
+        # Get image dimensions for SEGS shape
+        img_height = image.shape[1]
+        img_width = image.shape[2]
+        
         # Convert batch of images to list of PIL images for video processing
         pil_images = []
+        image_nps = []  # Keep numpy arrays for SEG cropping
         for batch_idx in range(batch_size):
             image_np = (image[batch_idx].cpu().numpy() * 255).astype(np.uint8)
+            image_nps.append(image_np)
             pil_image = Image.fromarray(image_np)
             pil_images.append(pil_image)
         
@@ -380,6 +438,7 @@ class SAM3Segmentation:
             all_result_images = []
             all_masks = []
             all_combined_masks = []
+            all_segs = []  # List to collect all SEG objects
             
             for batch_idx in range(batch_size):
                 pil_image = pil_images[batch_idx]
@@ -478,11 +537,55 @@ class SAM3Segmentation:
                 result_np = np.array(result_img).astype(np.float32) / 255.0
                 all_result_images.append(result_np)
                 
-                # Prepare masks
+                # Prepare masks and SEG objects
                 mask_list = []
-                for mask in filtered_masks:
+                image_np = image_nps[batch_idx]
+                img_w, img_h = pil_image.size  # PIL size is (width, height)
+                
+                for i, (obj_id, mask, prob, box_xywh) in enumerate(zip(filtered_obj_ids, filtered_masks, filtered_probs, filtered_boxes)):
                     mask_float = mask.astype(np.float32)
+                    
+                    # Ensure mask matches image dimensions (height, width)
+                    if mask_float.shape != (img_h, img_w):
+                        mask_img = Image.fromarray((mask_float * 255).astype(np.uint8))
+                        mask_img = mask_img.resize((img_w, img_h), Image.NEAREST)
+                        mask_float = (np.array(mask_img) / 255.0).astype(np.float32)
+                    
                     mask_list.append(mask_float)
+                    
+                    # Convert box_xywh (relative coords) to pixel coords for SEG
+                    x, y, w, h = box_xywh
+                    x1 = int(x * img_w)
+                    y1 = int(y * img_h)
+                    x2 = int((x + w) * img_w)
+                    y2 = int((y + h) * img_h)
+                    
+                    # Clamp to image bounds (img_w is width, img_h is height)
+                    x1 = max(0, min(x1, img_w - 1))
+                    y1 = max(0, min(y1, img_h - 1))
+                    x2 = max(x1 + 1, min(x2, img_w))
+                    y2 = max(y1 + 1, min(y2, img_h))
+                    
+                    # crop_region and bbox are the same for this case
+                    crop_region = (x1, y1, x2, y2)
+                    bbox = (x1, y1, x2, y2)
+                    
+                    # Crop the image and mask for this segment
+                    # image_np is [H, W, C], mask_float is [H, W]
+                    cropped_image_np = image_np[y1:y2, x1:x2].astype(np.float32) / 255.0
+                    cropped_mask = mask_float[y1:y2, x1:x2].copy()
+                    
+                    # Create SEG object with object ID in label for tracking
+                    seg = SEG(
+                        cropped_image=cropped_image_np,
+                        cropped_mask=cropped_mask,
+                        confidence=float(prob),
+                        crop_region=crop_region,
+                        bbox=bbox,
+                        label=f"{prompt}_{obj_id}",
+                        control_net_wrapper=None
+                    )
+                    all_segs.append(seg)
                 
                 if len(mask_list) > 0:
                     all_masks.extend(mask_list)
@@ -511,16 +614,204 @@ class SAM3Segmentation:
         
         combined_mask_tensor = torch.from_numpy(np.stack(all_combined_masks, axis=0))
         
-        return (result_tensor, masks_tensor, combined_mask_tensor)
+        # Build SEGS tuple: (shape, list_of_SEG_objects)
+        # Shape is (height, width) of the original image
+        segs = ((img_height, img_width), all_segs)
+        
+        return (result_tensor, masks_tensor, combined_mask_tensor, segs)
+
+
+class MaskOutline:
+    """
+    Mask Outline Node
+    
+    Creates an outline version of a mask. You can set the outline width and choose
+    whether to create the outline inside or outside the original mask boundary.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "mask": ("MASK", {"tooltip": "Input mask to create outline from"}),
+                "outline_width": ("INT", {
+                    "default": 5,
+                    "min": 1,
+                    "max": 100,
+                    "step": 1,
+                    "tooltip": "Width of the outline in pixels"
+                }),
+                "mode": (["inside", "outside", "both"], {
+                    "default": "inside",
+                    "tooltip": "Create outline inside, outside, or on both sides of the mask boundary"
+                }),
+            },
+        }
+    
+    RETURN_TYPES = ("MASK",)
+    RETURN_NAMES = ("outline_mask",)
+    DESCRIPTION = cleandoc(__doc__)
+    FUNCTION = "create_outline"
+    CATEGORY = "SAM3"
+
+    def create_outline(self, mask, outline_width, mode):
+        """
+        Create an outline from the input mask
+        
+        Args:
+            mask: Input mask tensor [B, H, W] with values in [0, 1]
+            outline_width: Width of the outline in pixels
+            mode: "inside", "outside", or "both"
+            
+        Returns:
+            Outline mask tensor [B, H, W]
+        """
+        import cv2
+        
+        # Ensure mask is on CPU and convert to numpy
+        if torch.is_tensor(mask):
+            mask_np = mask.cpu().numpy()
+        else:
+            mask_np = np.array(mask)
+        
+        # Handle different input shapes
+        if len(mask_np.shape) == 2:
+            mask_np = mask_np[np.newaxis, ...]  # Add batch dimension
+        
+        batch_size = mask_np.shape[0]
+        orig_h, orig_w = mask_np.shape[1], mask_np.shape[2]
+        result_masks = []
+        
+        # Create structuring element for morphological operations
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (outline_width * 2 + 1, outline_width * 2 + 1))
+        
+        # Padding size to handle edge cases - use outline_width + 1 to ensure proper edge detection
+        pad_size = outline_width + 1
+        
+        for i in range(batch_size):
+            # Get single mask and convert to uint8 for OpenCV
+            single_mask = (mask_np[i] * 255).astype(np.uint8)
+            
+            if mode == "inside" or mode == "both":
+                # Pad with zeros (background) so erosion creates outline at image edges
+                # This ensures that mask areas touching the image border get an inner outline
+                padded_mask = cv2.copyMakeBorder(
+                    single_mask, pad_size, pad_size, pad_size, pad_size,
+                    cv2.BORDER_CONSTANT, value=0
+                )
+                
+                # Erode the padded mask
+                eroded_padded = cv2.erode(padded_mask, kernel, iterations=1)
+                
+                # Crop back to original size
+                eroded = eroded_padded[pad_size:pad_size + orig_h, pad_size:pad_size + orig_w]
+                
+                # Calculate inner outline
+                inner_outline = cv2.subtract(single_mask, eroded)
+            
+            if mode == "outside" or mode == "both":
+                # For outside, we don't need special edge handling since we dilate
+                dilated = cv2.dilate(single_mask, kernel, iterations=1)
+                outer_outline = cv2.subtract(dilated, single_mask)
+            
+            # Combine based on mode
+            if mode == "inside":
+                outline = inner_outline
+            elif mode == "outside":
+                outline = outer_outline
+            elif mode == "both":
+                outline = cv2.add(inner_outline, outer_outline)
+            
+            # Convert back to float [0, 1]
+            outline_float = outline.astype(np.float32) / 255.0
+            result_masks.append(outline_float)
+        
+        # Stack results and convert to tensor
+        result_np = np.stack(result_masks, axis=0)
+        result_tensor = torch.from_numpy(result_np)
+        
+        return (result_tensor,)
+
+
+class SEGSToRectangle:
+    """
+    SEGS to Rectangle Node
+    
+    Converts SEGS with polygon-shaped masks into SEGS with rectangular masks
+    that fully encompass the original polygon shape. The rectangle is defined
+    by the bounding box of the original mask.
+    """
+    
+    @classmethod
+    def INPUT_TYPES(s):
+        return {
+            "required": {
+                "segs": ("SEGS", {"tooltip": "Input SEGS to convert to rectangular masks"}),
+            },
+        }
+    
+    RETURN_TYPES = ("SEGS",)
+    RETURN_NAMES = ("segs",)
+    DESCRIPTION = cleandoc(__doc__)
+    FUNCTION = "convert_to_rectangle"
+    CATEGORY = "SAM3"
+
+    def convert_to_rectangle(self, segs):
+        """
+        Convert polygon SEGS masks to rectangular masks
+        
+        Args:
+            segs: Input SEGS tuple ((height, width), list_of_SEG_objects)
+            
+        Returns:
+            SEGS with rectangular masks encompassing the original polygons
+        """
+        shape, seg_list = segs
+        
+        if len(seg_list) == 0:
+            return (segs,)
+        
+        new_seg_list = []
+        
+        for seg in seg_list:
+            # Get the crop region which defines the bounding box
+            x1, y1, x2, y2 = seg.crop_region
+            crop_width = x2 - x1
+            crop_height = y2 - y1
+            
+            # Create a rectangular mask that fills the entire crop region
+            # The cropped_mask should be the size of the crop region
+            rectangular_mask = np.ones((crop_height, crop_width), dtype=np.float32)
+            
+            # Create rectangular cropped image (same as original since crop is already rectangular)
+            cropped_image = seg.cropped_image
+            
+            # Create new SEG with rectangular mask
+            new_seg = SEG(
+                cropped_image=cropped_image,
+                cropped_mask=rectangular_mask,
+                confidence=seg.confidence,
+                crop_region=seg.crop_region,
+                bbox=seg.bbox,
+                label=seg.label,
+                control_net_wrapper=seg.control_net_wrapper
+            )
+            new_seg_list.append(new_seg)
+        
+        return ((shape, new_seg_list),)
 
 
 # A dictionary that contains all nodes you want to export with their names
 # NOTE: names should be globally unique
 NODE_CLASS_MAPPINGS = {
-    "SAM3Segmentation": SAM3Segmentation
+    "SAM3Segmentation": SAM3Segmentation,
+    "MaskOutline": MaskOutline,
+    "SEGSToRectangle": SEGSToRectangle
 }
 
 # A dictionary that contains the friendly/humanly readable titles for the nodes
 NODE_DISPLAY_NAME_MAPPINGS = {
-    "SAM3Segmentation": "SAM3 Segmentation"
+    "SAM3Segmentation": "SAM3 Segmentation",
+    "MaskOutline": "Mask Outline",
+    "SEGSToRectangle": "SEGS to Rectangle"
 }
