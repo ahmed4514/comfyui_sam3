@@ -173,23 +173,39 @@ class SAM3Segmentation:
         Returns:
             Tuple of (segmented_image, masks, mask_combined)
         """
-        # Load model if not already loaded
-        self.load_model(use_video_model=use_video_model)
+        # Disable autocast to prevent SAM3 from contaminating global autocast state
+        # This fixes "Unexpected floating ScalarType in at::autocast::prioritize" errors
+        # that can occur in downstream models like WAN video
+        device_type = 'cuda' if torch.cuda.is_available() else 'cpu'
         
-        if use_video_model:
-            result = self._segment_with_video_model(
-                image, prompt, threshold, min_width_pixels, min_height_pixels, object_ids
-            )
-        else:
-            result = self._segment_with_image_model(
-                image, prompt, threshold, min_width_pixels, min_height_pixels
-            )
+        with torch.amp.autocast(device_type=device_type, enabled=False):
+            # Load model if not already loaded
+            self.load_model(use_video_model=use_video_model)
+            
+            if use_video_model:
+                result = self._segment_with_video_model(
+                    image, prompt, threshold, min_width_pixels, min_height_pixels, object_ids
+                )
+            else:
+                result = self._segment_with_image_model(
+                    image, prompt, threshold, min_width_pixels, min_height_pixels
+                )
 
-        # Unload if requested
-        if unload_after_run:
-            self.unload_model()
+            # Unload if requested
+            if unload_after_run:
+                self.unload_model()
+        
+        # Clear any cached autocast state and CUDA caches
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        # Ensure output tensors are clean float32 on CPU (standard ComfyUI format)
+        result_image, masks, combined_mask, segs = result
+        result_image = result_image.contiguous().cpu().to(dtype=torch.float32)
+        masks = masks.contiguous().cpu().to(dtype=torch.float32)
+        combined_mask = combined_mask.contiguous().cpu().to(dtype=torch.float32)
 
-        return result
+        return (result_image, masks, combined_mask, segs)
 
     def _segment_with_image_model(self, image, prompt, threshold, min_width_pixels, min_height_pixels):
         """Process images independently using the image model"""
@@ -356,17 +372,18 @@ class SAM3Segmentation:
                 all_combined_masks.append(np.zeros((pil_image.size[1], pil_image.size[0]), dtype=np.float32))
         
         # Stack all results into batch tensors
-        result_tensor = torch.from_numpy(np.stack(all_result_images, axis=0))
+        # Ensure float32 dtype to prevent autocast issues with downstream models (e.g., WAN video model)
+        result_tensor = torch.from_numpy(np.stack(all_result_images, axis=0)).to(dtype=torch.float32)
         
         # Stack masks into batch tensor [B, H, W]
         if len(all_masks) > 0:
-            masks_tensor = torch.from_numpy(np.stack(all_masks, axis=0))
+            masks_tensor = torch.from_numpy(np.stack(all_masks, axis=0)).to(dtype=torch.float32)
         else:
             # Return empty mask if no detections across all images
             masks_tensor = torch.zeros((1, image.shape[1], image.shape[2]), dtype=torch.float32)
         
         # Stack combined masks [B, H, W]
-        combined_mask_tensor = torch.from_numpy(np.stack(all_combined_masks, axis=0))
+        combined_mask_tensor = torch.from_numpy(np.stack(all_combined_masks, axis=0)).to(dtype=torch.float32)
         
         # Build SEGS tuple: (shape, list_of_SEG_objects)
         # Shape is (height, width) of the original image
@@ -605,14 +622,15 @@ class SAM3Segmentation:
             print("SAM3 Video: Inference state reset")
         
         # Stack results
-        result_tensor = torch.from_numpy(np.stack(all_result_images, axis=0))
+        # Ensure float32 dtype to prevent autocast issues with downstream models (e.g., WAN video model)
+        result_tensor = torch.from_numpy(np.stack(all_result_images, axis=0)).to(dtype=torch.float32)
         
         if len(all_masks) > 0:
-            masks_tensor = torch.from_numpy(np.stack(all_masks, axis=0))
+            masks_tensor = torch.from_numpy(np.stack(all_masks, axis=0)).to(dtype=torch.float32)
         else:
             masks_tensor = torch.zeros((1, image.shape[1], image.shape[2]), dtype=torch.float32)
         
-        combined_mask_tensor = torch.from_numpy(np.stack(all_combined_masks, axis=0))
+        combined_mask_tensor = torch.from_numpy(np.stack(all_combined_masks, axis=0)).to(dtype=torch.float32)
         
         # Build SEGS tuple: (shape, list_of_SEG_objects)
         # Shape is (height, width) of the original image
@@ -727,8 +745,9 @@ class MaskOutline:
             result_masks.append(outline_float)
         
         # Stack results and convert to tensor
+        # Ensure float32 dtype to prevent autocast issues with downstream models
         result_np = np.stack(result_masks, axis=0)
-        result_tensor = torch.from_numpy(result_np)
+        result_tensor = torch.from_numpy(result_np).to(dtype=torch.float32)
         
         return (result_tensor,)
 
