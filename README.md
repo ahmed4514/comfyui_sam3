@@ -116,8 +116,9 @@ Creates an outline version of a mask with configurable width and position.
 
 **Example Use Cases:**
 - Create stroke effects around segmented objects
-- Generate selection borders for compositing
-- Add glow or border effects to masks
+- Generate selection borders for targetting in image edit models
+
+![Rectangle Around Subject](workflow_rectangle_around_subject.png)
 
 ### SEGS to Rectangle Node
 
